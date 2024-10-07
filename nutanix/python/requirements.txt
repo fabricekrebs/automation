@@ -1,0 +1,4 @@
+ntnx-networking-py-client
+ntnx-prism-py-client
+ntnx-vmm-py-client
+python-dotenv
