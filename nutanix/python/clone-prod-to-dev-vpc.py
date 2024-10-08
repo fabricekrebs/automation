@@ -1,11 +1,6 @@
 #!/usr/bin/env python
 
 import time
-import json
-import requests
-import urllib3
-import sys
-import re
 import math
 import os
 
@@ -17,10 +12,6 @@ from ntnx_vmm_py_client.models.vmm.v4.ahv.config.CloneOverrideParams import Clon
 from ntnx_vmm_py_client.models.vmm.v4.ahv.config.Nic import Nic
 from ntnx_vmm_py_client.models.vmm.v4.ahv.config.NicNetworkInfo import NicNetworkInfo
 from ntnx_vmm_py_client.models.vmm.v4.ahv.config.SubnetReference import SubnetReference
-from ntnx_prism_py_client import Configuration as PrismConfiguration
-from ntnx_prism_py_client import ApiClient as PrismClient
-from ntnx_prism_py_client.rest import ApiException as PrismException
-from ntnx_vmm_py_client import ApiClient as VMMClient
 from ntnx_vmm_py_client.rest import ApiException as VMMException
 
 load_dotenv()
@@ -29,9 +20,10 @@ load_dotenv()
 pcIp = os.getenv('PRISM_CENTRAL')  # Prism Central IP
 username = os.getenv('PC_ADMIN') # Nutanix username
 password = os.getenv('PC_PASSWORD')  # Nutanix password
-vpcName = "vpc-01"
-vpcDescription = "This is my VPC description"
-vpcType = "REGULAR"  # Can be "REGULAR" or "TRANSIT"
+vpcName = os.getenv('VPC_NAME')
+categoryName = os.getenv('CATEGORY_NAME')
+categoryValue = os.getenv('CATEGORY_VALUE')
+
 subnetList = {
     "network1": {
         "subnetName": "vpc-01-subnet-01",
@@ -166,8 +158,6 @@ def retrieveVPCSubnet(vpcId, timeout=3000, interval=1):
         nbPages = math.ceil(myData['metadata']['total_available_results'] / limitPerPage)
 
         for item in myData['data']:
-            with open('output.txt', 'a') as file:
-                file.write("Subnet Name : " + str(item['name']) + "\n")  # Write data to the file
             subnetList.append({'name': item['name'], 'ext_id': item['ext_id']})
         page += 1
 
@@ -193,8 +183,6 @@ def getVmByCategories(categoryName, categoryValue):
         nbPages = math.ceil(myData['metadata']['total_available_results'] / limitPerPage)
 
         for item in myData['data']:
-            with open('output.txt', 'a') as file:
-                file.write("VM Name : " + str(item['name']) + "\n")  # Write data to the file
             if item.get('categories') is not None:
                 for category in item['categories']:
                     if category['ext_id'] == categoryId:
@@ -260,12 +248,14 @@ def main():
             value['ipPoolEnd']
         )
 
-    vmList = getVmByCategories("hol-environment","prod")
+    vmList = getVmByCategories(categoryName, categoryValue)
     
     vpcSubnets = retrieveVPCSubnet(vpcId)
 
     for vms in vmList:
        cloneVMById(vms['ext_id'], vpcSubnets[1]['ext_id'], "clone-" + vms['name'])
+
+    print("%s VMs have been cloned" % len(vmList))
 
 if __name__ == "__main__":
     main()
