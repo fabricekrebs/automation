@@ -29,20 +29,23 @@ vpcName = os.getenv('VPC_NAME')
 categoryName = os.getenv('CATEGORY_NAME')
 categoryValue = os.getenv('CATEGORY_VALUE')
 externalNetworkName = os.getenv('EXTERNAL_NETWORK_NAME')
+categoryFloatingIPName = os.getenv('CATEGORY_FLOATING_IP_NAME')
+
+# Retry parameters
+max_wait_time = 60  # maximum wait time in seconds
+interval = 1        # interval between retries in seconds
 
 # Subnet configuration
 subnetList = {
-    "network1": {
-        "subnetName": "vpc-01-subnet-01",
+    "vpc-01-subnet-01": {
         "subnetDescription": "This is the first overlay subnet",
-        "ipNetwork": "10.1.0.0",
-        "ipPrefix": 24,
-        "ipGateway": "10.1.0.1",
-        "ipPoolStart": "10.1.0.100",
-        "ipPoolEnd": "10.1.0.199"
+        "ipNetwork": "172.24.0.0",
+        "ipPrefix": 16,
+        "ipGateway": "172.24.0.1",
+        "ipPoolStart": "172.24.32.10",
+        "ipPoolEnd": "172.24.47.254"
     },
-    "network2": {
-        "subnetName": "vpc-01-subnet-02",
+    "vpc-01-subnet-02": {
         "subnetDescription": "This is the second overlay subnet",
         "ipNetwork": "10.2.0.0",
         "ipPrefix": 24,
@@ -51,6 +54,11 @@ subnetList = {
         "ipPoolEnd": "10.2.0.199"
     }
 }
+
+networkMapping = [
+    {"networkName": "IPAM-NXCLUSTER03", "subnetName": "vpc-01-subnet-01"},
+    {"networkName": "INFRA", "subnetName": "vpc-01-subnet-02"}
+]
 
 #########################################
 # SDK Client Configuration
@@ -254,6 +262,30 @@ def cloneVmById(vmId, networkExtId, vmName):
         )
 
         vmApi.clone_vm(extId=vmId, body=cloneConfig, if_match=etagValue)
+        
+        #retrieve the category ID matching
+        categoryFloatingIPExtId = getCategoryId(categoryFloatingIPName, 'yes')
+
+        elapsed_time = 0    # time elapsed since the start of the retries
+
+        while elapsed_time < max_wait_time:
+            if vmApi.list_vms(_filter="name eq '" + vmName + "'").data is not None:
+                break
+
+            print("waiting for VM to be created to assign floating IP")
+
+            # Wait for the specified interval before retrying
+            time.sleep(interval)
+            elapsed_time += interval  # Update the elapsed time
+            
+
+        #check if source VM has the floating IP category
+        if vm.data.categories is not None:
+            for category in vm.data.categories:
+                if category.ext_id == categoryFloatingIPExtId:
+                    print("Assigning floating IP to VM")
+                    assignFloatingIp(vmName)
+
     except VMMException as e:
         print(e)
 
@@ -298,6 +330,40 @@ def createDefaultRoute(vpcId):
 
     routeApi.update_route_table_by_id(routeTable.ext_id, body=routeTable, if_match=etagValue)
 
+# Function to create a floating IP
+def assignFloatingIp(name):
+    client = ntnx_networking_py_client.ApiClient(configuration=sdkConfig)
+    floatingIpApi = ntnx_networking_py_client.FloatingIpsApi(api_client=client)
+
+    client = ntnx_vmm_py_client.ApiClient(configuration=sdkConfig)
+    vmApi = ntnx_vmm_py_client.VmApi(api_client=client)
+
+
+    floatingIpConfig = v4NetConfig.FloatingIp.FloatingIp()
+    vmNicAssociation = v4NetConfig.VmNicAssociation.VmNicAssociation()
+
+    elapsed_time = 0    # time elapsed since the start of the retries
+    while elapsed_time < max_wait_time:
+        if vmApi.list_vms(_filter="name eq '" + name + "'").data is not None:
+
+            vmNicAssociation.vm_nic_reference = vmApi.list_vms(_filter="name eq '" + name + "'").data[0].nics[0].ext_id
+            break
+
+        print("waiting for VM to be created to assign floating IP")
+
+        # Wait for the specified interval before retrying
+        time.sleep(interval)
+        elapsed_time += interval  # Update the elapsed time
+
+    floatingIpConfig.name = name
+    floatingIpConfig.external_subnet_reference = retrieveNetworkId(externalNetworkName)
+    floatingIpConfig.association = vmNicAssociation
+
+    try:
+        floatingIpApi.create_floating_ip(body=floatingIpConfig)
+    except ntnx_networking_py_client.rest.ApiException as e:
+        print(e)
+
 # Main execution function
 def main():
     createVpc(vpcName)
@@ -307,7 +373,7 @@ def main():
     for key, value in subnetList.items():
         createOverlaySubnet(
             vpcId,
-            value['subnetName'],
+            key,
             value['ipNetwork'],
             value['ipPrefix'],
             value['ipGateway'],
@@ -320,7 +386,7 @@ def main():
     vpcSubnets = retrieveVpcSubnets(vpcId)
 
     for vm in vmList:
-       cloneVmById(vm['ext_id'], vpcSubnets[1]['ext_id'], "clone-" + vm['name'])
+        cloneVmById(vm['ext_id'], vpcSubnets[1]['ext_id'], "clone-" + vm['name'])
 
     createDefaultRoute(vpcId)
 
