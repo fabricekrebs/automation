@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 
+import os
 import time
 import math
-import os
 
 from dotenv import load_dotenv
+import ntnx_networking_py_client
+import ntnx_vmm_py_client
+import ntnx_prism_py_client
 import ntnx_networking_py_client.models
 import ntnx_networking_py_client.models.networking
-import ntnx_networking_py_client, ntnx_vmm_py_client, ntnx_prism_py_client
 import ntnx_networking_py_client.models.common.v1.config as v1CommonConfig
 import ntnx_networking_py_client.models.networking.v4.config as v4NetConfig
 from ntnx_vmm_py_client.models.vmm.v4.ahv.config.CloneOverrideParams import CloneOverrideParams
@@ -16,17 +18,19 @@ from ntnx_vmm_py_client.models.vmm.v4.ahv.config.NicNetworkInfo import NicNetwor
 from ntnx_vmm_py_client.models.vmm.v4.ahv.config.SubnetReference import SubnetReference
 from ntnx_vmm_py_client.rest import ApiException as VMMException
 
+# Load environment variables
 load_dotenv()
 
 # Customizable variables
-pcIp = os.getenv('PRISM_CENTRAL')  # Prism Central IP
-username = os.getenv('PC_ADMIN') # Nutanix username
-password = os.getenv('PC_PASSWORD')  # Nutanix password
+prismCentralIp = os.getenv('PRISM_CENTRAL')  # Prism Central IP
+pcUsername = os.getenv('PC_ADMIN')  # Nutanix username
+pcPassword = os.getenv('PC_PASSWORD')  # Nutanix password
 vpcName = os.getenv('VPC_NAME')
 categoryName = os.getenv('CATEGORY_NAME')
 categoryValue = os.getenv('CATEGORY_VALUE')
 externalNetworkName = os.getenv('EXTERNAL_NETWORK_NAME')
 
+# Subnet configuration
 subnetList = {
     "network1": {
         "subnetName": "vpc-01-subnet-01",
@@ -49,45 +53,45 @@ subnetList = {
 }
 
 #########################################
-#        SDK client configuration
+# SDK Client Configuration
 #########################################
 
 # Configure the client
-config = ntnx_networking_py_client.Configuration()
-config.host = pcIp
-config.port = 9440
-config.maxRetryAttempts = 3
-config.backoffFactor = 3
-config.username = username
-config.password = password
-config.verify_ssl = False
+sdkConfig = ntnx_networking_py_client.Configuration()
+sdkConfig.host = prismCentralIp
+sdkConfig.port = 9440
+sdkConfig.maxRetryAttempts = 3
+sdkConfig.backoffFactor = 3
+sdkConfig.username = pcUsername
+sdkConfig.password = pcPassword
+sdkConfig.verify_ssl = False
 
-# Function to create VPC
+# Function to create a VPC
 def createVpc(vpcName):
-    client = ntnx_networking_py_client.ApiClient(configuration=config)
+    client = ntnx_networking_py_client.ApiClient(configuration=sdkConfig)
     vpcsApi = ntnx_networking_py_client.VpcsApi(api_client=client)
     vpc = ntnx_networking_py_client.Vpc()
     externalSubnet = ntnx_networking_py_client.ExternalSubnet()
     externalSubnet.subnet_reference = retrieveNetworkId(externalNetworkName)
-    vpc.name = vpcName  # required field
+    vpc.name = vpcName  # Required field
     vpc.external_subnets = [externalSubnet]
 
     try:
-        apiResponse = vpcsApi.create_vpc(body=vpc)
+        vpcsApi.create_vpc(body=vpc)
         return True
     except ntnx_networking_py_client.rest.ApiException as e:
         return False
 
-# Check if 'name' field contains 'dev1-vpc'
+# Function to check if a VPC exists
 def checkVpcExists(vpcData, vpcName):
     for vpc in vpcData:
         if vpc.name == vpcName:
             return vpc._ExternalizableAbstractModel__ext_id
     return False
 
-# Function to check VPC status
+# Function to wait for VPC creation
 def waitForVpcCreation(vpcName, timeout=3000, interval=1):
-    client = ntnx_networking_py_client.ApiClient(configuration=config)
+    client = ntnx_networking_py_client.ApiClient(configuration=sdkConfig)
     vpcsApi = ntnx_networking_py_client.VpcsApi(api_client=client)
     vpcs = vpcsApi.list_vpcs()
 
@@ -102,14 +106,15 @@ def waitForVpcCreation(vpcName, timeout=3000, interval=1):
 
     return False
 
-# Function to create overlay subnet
+# Function to create an overlay subnet
 def createOverlaySubnet(vpcId, subnetName, ipNetwork, ipPrefix, ipGateway, ipPoolStart, ipPoolEnd):
-    client = ntnx_networking_py_client.ApiClient(configuration=config)
+    client = ntnx_networking_py_client.ApiClient(configuration=sdkConfig)
     subnetsApi = ntnx_networking_py_client.SubnetsApi(api_client=client)
     subnet = ntnx_networking_py_client.Subnet()
 
+    # Set up the subnet configuration
     subnet.name = subnetName
-    subnet.subnet_type = ntnx_networking_py_client.SubnetType.OVERLAY  # required field
+    subnet.subnet_type = ntnx_networking_py_client.SubnetType.OVERLAY  # Required field
     subnet.vpc_reference = vpcId
 
     subnet.ip_config = [
@@ -143,18 +148,18 @@ def createOverlaySubnet(vpcId, subnetName, ipNetwork, ipPrefix, ipGateway, ipPoo
     ]
 
     try:
-        apiResponse = subnetsApi.create_subnet(body=subnet)
+        subnetsApi.create_subnet(body=subnet)
     except ntnx_networking_py_client.rest.ApiException as e:
         print(e)
 
-# Function to check VPC status
-def retrieveVPCSubnet(vpcId, timeout=3000, interval=1):
+# Function to retrieve subnets in a VPC
+def retrieveVpcSubnets(vpcId, timeout=3000, interval=1):
     subnetList = []
     nbPages = 10000
     page = 0
     limitPerPage = 50
 
-    client = ntnx_networking_py_client.ApiClient(configuration=config)
+    client = ntnx_networking_py_client.ApiClient(configuration=sdkConfig)
     subnetApi = ntnx_networking_py_client.SubnetsApi(api_client=client)
 
     while page < nbPages:
@@ -169,10 +174,9 @@ def retrieveVPCSubnet(vpcId, timeout=3000, interval=1):
 
     return subnetList
 
-
 # Function to retrieve the extId of a specific subnet
 def retrieveNetworkId(networkName):
-    client = ntnx_networking_py_client.ApiClient(configuration=config)
+    client = ntnx_networking_py_client.ApiClient(configuration=sdkConfig)
     subnetApi = ntnx_networking_py_client.SubnetsApi(api_client=client)
 
     response = subnetApi.list_subnets(_filter="name eq '" + str(networkName) + "'")
@@ -183,19 +187,20 @@ def retrieveNetworkId(networkName):
     else:
         return None
 
-def getVmByCategories(categoryName, categoryValue):
+# Function to get VMs by categories
+def getVmsByCategories(categoryName, categoryValue):
     vmList = []
     nbPages = 10000
     page = 0
     limitPerPage = 50
 
-    client = ntnx_vmm_py_client.ApiClient(configuration=config)
+    client = ntnx_vmm_py_client.ApiClient(configuration=sdkConfig)
     vmApi = ntnx_vmm_py_client.VmApi(api_client=client)
 
     categoryId = getCategoryId(categoryName, categoryValue)
 
     while page < nbPages:
-        # Temporary filter only on VM starting with 'hol' to bypass the uefi issue
+        # Temporary filter only on VM starting with 'hol' to bypass the UEFI issue
         response = vmApi.list_vms(_page=page, _limit=limitPerPage, _orderby="name asc", _filter="startswith(name, 'hol')")
         myData = response.to_dict()
 
@@ -210,11 +215,12 @@ def getVmByCategories(categoryName, categoryValue):
 
     return vmList
 
+# Function to get category ID by name and value
 def getCategoryId(name, value):
     page = 0
     limitPerPage = 50
 
-    client = ntnx_prism_py_client.ApiClient(configuration=config)
+    client = ntnx_prism_py_client.ApiClient(configuration=sdkConfig)
     categoriesApi = ntnx_prism_py_client.CategoriesApi(api_client=client)
 
     try:
@@ -223,8 +229,9 @@ def getCategoryId(name, value):
     except ntnx_prism_py_client.rest.ApiException as e:
         print(e)
 
-def cloneVMById(vmId, networkExtId, vmName):
-    client = ntnx_vmm_py_client.ApiClient(configuration=config)
+# Function to clone a VM by its ID
+def cloneVmById(vmId, networkExtId, vmName):
+    client = ntnx_vmm_py_client.ApiClient(configuration=sdkConfig)
     vmApi = ntnx_vmm_py_client.VmApi(api_client=client)
 
     try:
@@ -237,24 +244,24 @@ def cloneVMById(vmId, networkExtId, vmName):
             Nic(
                 network_info=NicNetworkInfo(
                     subnet=SubnetReference(ext_id=networkExtId)
-                    )
                 )
-            ]
+            )
+        ]
 
         cloneConfig = CloneOverrideParams(
             name=vmName,
             nics=nics,
         )
-        
-        response = vmApi.clone_vm(extId=vmId, body=cloneConfig, if_match=etagValue)
+
+        vmApi.clone_vm(extId=vmId, body=cloneConfig, if_match=etagValue)
     except VMMException as e:
         print(e)
 
+# Function to create a default route
 def createDefaultRoute(vpcId):
+    externalNetworkId = retrieveNetworkId(externalNetworkName)
 
-    externalNetworkId= retrieveNetworkId(externalNetworkName)
-
-    client = ntnx_networking_py_client.ApiClient(configuration=config)
+    client = ntnx_networking_py_client.ApiClient(configuration=sdkConfig)
     routeApi = ntnx_networking_py_client.RouteTablesApi(api_client=client)
 
     routeTableResponse = routeApi.list_route_tables(_filter="vpcReference eq '" + vpcId + "'")
@@ -283,7 +290,6 @@ def createDefaultRoute(vpcId):
         nexthop_name=externalNetworkName
     )
 
-
     # Check if static_routes exist and append the new route
     if hasattr(routeTable, 'static_routes') and routeTable.static_routes:
         routeTable.static_routes.append(new_route)
@@ -292,7 +298,7 @@ def createDefaultRoute(vpcId):
 
     routeApi.update_route_table_by_id(routeTable.ext_id, body=routeTable, if_match=etagValue)
 
-# Main execution
+# Main execution function
 def main():
     createVpc(vpcName)
     vpcId = waitForVpcCreation(vpcName)
@@ -300,21 +306,21 @@ def main():
     # Create the VPC network
     for key, value in subnetList.items():
         createOverlaySubnet(
-            vpcId, 
-            value['subnetName'], 
-            value['ipNetwork'], 
-            value['ipPrefix'], 
-            value['ipGateway'], 
-            value['ipPoolStart'], 
+            vpcId,
+            value['subnetName'],
+            value['ipNetwork'],
+            value['ipPrefix'],
+            value['ipGateway'],
+            value['ipPoolStart'],
             value['ipPoolEnd']
         )
 
-    vmList = getVmByCategories(categoryName, categoryValue)
+    vmList = getVmsByCategories(categoryName, categoryValue)
     
-    vpcSubnets = retrieveVPCSubnet(vpcId)
+    vpcSubnets = retrieveVpcSubnets(vpcId)
 
-    for vms in vmList:
-       cloneVMById(vms['ext_id'], vpcSubnets[1]['ext_id'], "clone-" + vms['name'])
+    for vm in vmList:
+       cloneVmById(vm['ext_id'], vpcSubnets[1]['ext_id'], "clone-" + vm['name'])
 
     createDefaultRoute(vpcId)
 
