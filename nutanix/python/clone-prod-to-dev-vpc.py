@@ -5,6 +5,8 @@ import math
 import os
 
 from dotenv import load_dotenv
+import ntnx_networking_py_client.models
+import ntnx_networking_py_client.models.networking
 import ntnx_networking_py_client, ntnx_vmm_py_client, ntnx_prism_py_client
 import ntnx_networking_py_client.models.common.v1.config as v1CommonConfig
 import ntnx_networking_py_client.models.networking.v4.config as v4NetConfig
@@ -23,6 +25,7 @@ password = os.getenv('PC_PASSWORD')  # Nutanix password
 vpcName = os.getenv('VPC_NAME')
 categoryName = os.getenv('CATEGORY_NAME')
 categoryValue = os.getenv('CATEGORY_VALUE')
+externalNetworkName = os.getenv('EXTERNAL_NETWORK_NAME')
 
 subnetList = {
     "network1": {
@@ -64,7 +67,10 @@ def createVpc(vpcName):
     client = ntnx_networking_py_client.ApiClient(configuration=config)
     vpcsApi = ntnx_networking_py_client.VpcsApi(api_client=client)
     vpc = ntnx_networking_py_client.Vpc()
+    externalSubnet = ntnx_networking_py_client.ExternalSubnet()
+    externalSubnet.subnet_reference = retrieveNetworkId(externalNetworkName)
     vpc.name = vpcName  # required field
+    vpc.external_subnets = [externalSubnet]
 
     try:
         apiResponse = vpcsApi.create_vpc(body=vpc)
@@ -164,6 +170,19 @@ def retrieveVPCSubnet(vpcId, timeout=3000, interval=1):
     return subnetList
 
 
+# Function to retrieve the extId of a specific subnet
+def retrieveNetworkId(networkName):
+    client = ntnx_networking_py_client.ApiClient(configuration=config)
+    subnetApi = ntnx_networking_py_client.SubnetsApi(api_client=client)
+
+    response = subnetApi.list_subnets(_filter="name eq '" + str(networkName) + "'")
+    myData = response.to_dict()
+
+    if myData['data']:
+        return myData['data'][0]['ext_id']
+    else:
+        return None
+
 def getVmByCategories(categoryName, categoryValue):
     vmList = []
     nbPages = 10000
@@ -231,6 +250,48 @@ def cloneVMById(vmId, networkExtId, vmName):
     except VMMException as e:
         print(e)
 
+def createDefaultRoute(vpcId):
+
+    externalNetworkId= retrieveNetworkId(externalNetworkName)
+
+    client = ntnx_networking_py_client.ApiClient(configuration=config)
+    routeApi = ntnx_networking_py_client.RouteTablesApi(api_client=client)
+
+    routeTableResponse = routeApi.list_route_tables(_filter="vpcReference eq '" + vpcId + "'")
+    routeTableId = routeTableResponse.data[0].ext_id  # Access the ext_id correctly
+
+    # Fetch the full routeTable object by its ID
+    routeTable = routeApi.get_route_table_by_id(routeTableId).data
+    etagValue = client.get_etag(routeTable)
+
+    # Create a new route
+    new_route = v4NetConfig.Route.Route(
+        is_active=True,
+        priority=32768,
+        destination=v4NetConfig.IPSubnet.IPSubnet(
+           ipv4=v4NetConfig.IPv4Subnet.IPv4Subnet(
+                ip=v1CommonConfig.IPv4Address.IPv4Address(
+                    prefix_length=24,
+                    value="0.0.0.0",
+                ),
+                prefix_length=24
+            )
+        ),
+        nexthop_type="EXTERNAL_SUBNET",
+        nexthop_reference=externalNetworkId,
+        nexthop_ip_address=None,
+        nexthop_name=externalNetworkName
+    )
+
+
+    # Check if static_routes exist and append the new route
+    if hasattr(routeTable, 'static_routes') and routeTable.static_routes:
+        routeTable.static_routes.append(new_route)
+    else:
+        routeTable.static_routes = [new_route]  # Initialize if empty
+
+    routeApi.update_route_table_by_id(routeTable.ext_id, body=routeTable, if_match=etagValue)
+
 # Main execution
 def main():
     createVpc(vpcName)
@@ -254,6 +315,8 @@ def main():
 
     for vms in vmList:
        cloneVMById(vms['ext_id'], vpcSubnets[1]['ext_id'], "clone-" + vms['name'])
+
+    createDefaultRoute(vpcId)
 
     print("%s VMs have been cloned" % len(vmList))
 
